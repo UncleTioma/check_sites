@@ -1,2 +1,6 @@
 /.vscode
 api.json
+.env
+
+proxies.txt
+sites.json
